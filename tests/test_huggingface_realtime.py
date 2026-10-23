@@ -845,7 +845,7 @@ async def test_run_session_observes_user_partial_transcript(monkeypatch: Any) ->
 
 
 @pytest.mark.asyncio
-async def test_run_session_observes_server_turn_latency(monkeypatch: Any) -> None:
+async def test_run_session_observes_server_turn_latency(monkeypatch: Any, caplog: pytest.LogCaptureFixture) -> None:
     """response.done turn-latency metadata reaches the latency observer in ms; absent or malformed metadata is skipped."""
     turn_latency = json.dumps(
         {
@@ -867,6 +867,13 @@ async def test_run_session_observes_server_turn_latency(monkeypatch: Any) -> Non
     handler = _session_handler(
         monkeypatch,
         (
+            _FakeEvent("conversation.item.input_audio_transcription.completed", transcript="Hello"),
+            _FakeEvent("response.created", response=SimpleNamespace(id="response-1")),
+            _FakeEvent(
+                "response.output_audio.delta",
+                response_id="response-1",
+                delta=base64.b64encode(np.zeros(1, dtype=np.int16).tobytes()).decode(),
+            ),
             response_done({"speech_to_speech.turn_latency": turn_latency}),
             response_done(None),
             response_done({"speech_to_speech.turn_latency": "not json"}),
@@ -875,6 +882,7 @@ async def test_run_session_observes_server_turn_latency(monkeypatch: Any) -> Non
     )
     latencies: list[dict[str, int | str | None]] = []
     handler.set_latency_observer(latencies.append)
+    caplog.set_level(logging.INFO, logger=hf_mod.__name__)
 
     await handler._run_realtime_session()
 
@@ -892,6 +900,11 @@ async def test_run_session_observes_server_turn_latency(monkeypatch: Any) -> Non
         },
         {**missing_stages, "smart_status": None, "status": "completed"},
     ]
+    assert "Backend turn latency:" in caplog.text
+    assert "'stt_ms': 210" in caplog.text
+    assert "'e2e_ms': None" in caplog.text
+    assert "Turn latency: response.created" not in caplog.text
+    assert "Turn latency: first audio delta" not in caplog.text
 
 
 @pytest.mark.asyncio

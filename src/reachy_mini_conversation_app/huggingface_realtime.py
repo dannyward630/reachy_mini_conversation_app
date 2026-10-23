@@ -203,9 +203,6 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._response_done_event.set()
         self._response_started_or_rejected_event: asyncio.Event = asyncio.Event()
         self._last_response_rejected: bool = False
-        self._turn_user_done_at: float | None = None
-        self._turn_response_created_at: float | None = None
-        self._turn_first_audio_at: float | None = None
         self._startup_greeting_sent = False
         self._in_flight_tool_calls: set[str] = set()
         self._tool_batch_needs_response = False
@@ -923,9 +920,6 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                     logger.debug("Realtime event: %s", event.type)
                     if event.type == "input_audio_buffer.speech_started":
                         self._mark_activity("user_speech_started")
-                        self._turn_user_done_at = None
-                        self._turn_response_created_at = None
-                        self._turn_first_audio_at = None
                         await self._interrupt_playback()
                         self._set_listening(server=True)
                         logger.debug("User speech started")
@@ -954,10 +948,6 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         self.deps.movement_manager.set_speaking(True)
                         self._response_done_event.clear()
                         self._response_started_or_rejected_event.set()
-                        if self._turn_user_done_at is not None and self._turn_response_created_at is None:
-                            self._turn_response_created_at = time.perf_counter()
-                            delta_ms = (self._turn_response_created_at - self._turn_user_done_at) * 1000
-                            logger.info("Turn latency: response.created %.0f ms after user transcript", delta_ms)
                         logger.debug("Response created (active)")
 
                     if event.type == "response.done":
@@ -973,6 +963,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         logger.debug("Response done")
                         latency = _parse_turn_latency(event.response.metadata)
                         if latency is not None:
+                            logger.info("Backend turn latency: %s", latency)
                             self._emit_latency(latency)
 
                     if event.type == "conversation.item.input_audio_transcription.delta":
@@ -1009,9 +1000,6 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                             logger.debug("Ignoring empty user transcript")
                             continue
 
-                        self._turn_user_done_at = time.perf_counter()
-                        self._turn_response_created_at = None
-                        self._turn_first_audio_at = None
                         self._in_flight_tool_calls.clear()
                         self._tool_batch_needs_response = False
 
@@ -1037,10 +1025,6 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
                         decoded_pcm_bytes = base64.b64decode(event.delta)
                         decoded_pcm = np.frombuffer(decoded_pcm_bytes, dtype=np.int16).reshape(1, -1)
                         self._mark_activity("assistant_audio_delta")
-                        if self._turn_user_done_at is not None and self._turn_first_audio_at is None:
-                            self._turn_first_audio_at = time.perf_counter()
-                            delta_ms = (self._turn_first_audio_at - self._turn_user_done_at) * 1000
-                            logger.info("Turn latency: first audio delta %.0f ms after user transcript", delta_ms)
                         self.playback_frame_epochs[id(decoded_pcm)] = self.playback_epoch
                         if self.paced_playback:
                             self.playback_pending_frames += 1
